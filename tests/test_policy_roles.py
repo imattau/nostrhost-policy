@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import pytest
+
+from nostrhost_policy.policy.roles import ROLE_SCOPES, UnknownRoleError, scopes_for_roles
+from nostrhost_policy.policy.scopes import ALL_SCOPES, Scope
+
+
+def test_readonly_has_no_write_scopes():
+    scopes = ROLE_SCOPES["readonly"]
+    for scope in scopes:
+        assert scope.value.split(".")[-1] not in {"install", "upgrade", "remove", "restart", "create", "restore", "write", "delete"}
+
+
+def test_administrator_has_every_scope():
+    assert ROLE_SCOPES["administrator"] == ALL_SCOPES
+
+
+def test_scopes_for_multiple_roles_is_union():
+    scopes = scopes_for_roles(("readonly", "operator"))
+    assert Scope.SERVER_READ in scopes
+    assert Scope.SERVICES_RESTART in scopes
+
+
+def test_unknown_role_raises():
+    with pytest.raises(UnknownRoleError):
+        scopes_for_roles(("superuser",))
+
+
+def test_empty_roles_yields_no_scopes():
+    assert scopes_for_roles(()) == frozenset()
+
+
+def test_package_developer_can_publish_a_tested_package_to_the_catalog():
+    # package-developer already has packages.test, catalog.inspect, and
+    # catalog.verify - publishing what it just tested is the natural next
+    # step of that workflow, not a separate elevated capability. Publish
+    # itself still requires confirmation (see policy/rules.py's
+    # PolicyRule for "catalog.publish").
+    assert Scope.CATALOG_PUBLISH in ROLE_SCOPES["package-developer"]
+    assert Scope.ARMADA_WRITE in ROLE_SCOPES["package-developer"]
+
+
+def test_every_role_can_refresh_update_metadata():
+    # system.update (updates_refresh) only refreshes cached metadata - it
+    # doesn't touch installed apps - so it sits on _READONLY next to
+    # diagnosis.read, meaning every role built on top of readonly gets it
+    # too. Confirms it after the catalog.publish workflow: publishing a
+    # package and then wanting to see it in the live catalog is exactly
+    # why this tool exists.
+    for role in ROLE_SCOPES:
+        assert Scope.SYSTEM_UPDATE in ROLE_SCOPES[role], role
+
+
+def test_every_role_can_read_firewall_state():
+    # firewall.read (firewall_list/firewall_is_open) is diagnostic, same
+    # tier as services.read/domains.read - sits on _READONLY.
+    for role in ROLE_SCOPES:
+        assert Scope.FIREWALL_READ in ROLE_SCOPES[role], role
+
+
+def test_only_app_admin_and_above_can_change_firewall_or_run_migrations():
+    # Both carry system-wide/lockout risk, but that risk is covered by
+    # policy/rules.py's require_owner_signature (a *different* identity
+    # holding Scope.OWNER_APPROVE, which stays administrator-only) on every
+    # call - not by restricting the scope itself to administrator, which
+    # would make these unreachable by any agent identity that isn't
+    # separately granted "administrator". Same tier as system.upgrade.
+    for role in ("readonly", "operator"):
+        assert Scope.FIREWALL_WRITE not in ROLE_SCOPES[role], role
+        assert Scope.SYSTEM_MIGRATE not in ROLE_SCOPES[role], role
+    for role in ("app-admin", "package-developer", "administrator"):
+        assert Scope.FIREWALL_WRITE in ROLE_SCOPES[role], role
+        assert Scope.SYSTEM_MIGRATE in ROLE_SCOPES[role], role
+
+
+def test_every_role_can_read_settings_and_pending_regenconf():
+    # settings.read (settings_list/settings_get) and regenconf.read
+    # (regenconf_pending) are diagnostic, same tier as firewall.read -
+    # sit on _READONLY.
+    for role in ROLE_SCOPES:
+        assert Scope.SETTINGS_READ in ROLE_SCOPES[role], role
+        assert Scope.REGENCONF_READ in ROLE_SCOPES[role], role
+
+
+def test_only_app_admin_and_above_can_write_settings_or_apply_regenconf():
+    # Same reasoning as test_only_app_admin_and_above_can_change_firewall_
+    # or_run_migrations above: owner co-signature (a different identity)
+    # is the actual per-call safety gate, so the scope itself sits at
+    # app-admin rather than administrator-only.
+    for role in ("readonly", "operator"):
+        assert Scope.SETTINGS_WRITE not in ROLE_SCOPES[role], role
+        assert Scope.REGENCONF_WRITE not in ROLE_SCOPES[role], role
+    for role in ("app-admin", "package-developer", "administrator"):
+        assert Scope.SETTINGS_WRITE in ROLE_SCOPES[role], role
+        assert Scope.REGENCONF_WRITE in ROLE_SCOPES[role], role
+
+
+def test_only_app_admin_and_above_can_reboot_or_shutdown():
+    # Same reasoning as the scope-tier tests above: owner co-signature is
+    # the actual per-call gate for something this destructive, not the
+    # scope/role itself.
+    for role in ("readonly", "operator"):
+        assert Scope.SYSTEM_POWER not in ROLE_SCOPES[role], role
+    for role in ("app-admin", "package-developer", "administrator"):
+        assert Scope.SYSTEM_POWER in ROLE_SCOPES[role], role
+
+
+def test_roles_are_strictly_hierarchical_below_administrator():
+    # readonly < operator < app-admin < package-developer < administrator -
+    # each a strict superset of the one before, not independent branches
+    # that partially overlap. Regression test for the earlier design
+    # (package-developer was its own disjoint-ish branch off readonly and
+    # was missing app-admin's users.delete/backups.restore).
+    order = ["readonly", "operator", "app-admin", "package-developer", "administrator"]
+    for lower, higher in zip(order, order[1:]):
+        assert ROLE_SCOPES[lower] < ROLE_SCOPES[higher], f"{lower} should be a strict subset of {higher}"
+
+
+def test_package_developer_has_every_app_admin_scope():
+    # The concrete gap that motivated the hierarchy change: a
+    # package-developer identity doing real admin work still needs
+    # users.delete/backups.restore, not just fast install/upgrade/remove
+    # iteration.
+    assert Scope.USERS_DELETE in ROLE_SCOPES["package-developer"]
+    assert Scope.BACKUPS_RESTORE in ROLE_SCOPES["package-developer"]
+    assert Scope.BACKUPS_DELETE in ROLE_SCOPES["package-developer"]
+    assert ROLE_SCOPES["app-admin"] <= ROLE_SCOPES["package-developer"]
+
+
+def test_every_role_can_read_app_config():
+    # apps.config.read is diagnostic, same tier as firewall.read - sits on
+    # _READONLY.
+    for role in ROLE_SCOPES:
+        assert Scope.APPS_CONFIG_READ in ROLE_SCOPES[role], role
+
+
+def test_only_app_admin_and_above_can_write_app_config():
+    assert Scope.APPS_CONFIG_WRITE not in ROLE_SCOPES["readonly"]
+    assert Scope.APPS_CONFIG_WRITE not in ROLE_SCOPES["operator"]
+    for role in ("app-admin", "package-developer", "administrator"):
+        assert Scope.APPS_CONFIG_WRITE in ROLE_SCOPES[role], role
+
+
+def test_every_role_can_read_app_settings():
+    # apps.setting.read is bounded to one app's own settings.yml, same
+    # tier as apps.config.read - sits on _READONLY.
+    for role in ROLE_SCOPES:
+        assert Scope.APPS_SETTING_READ in ROLE_SCOPES[role], role
+
+
+def test_only_app_admin_and_above_can_write_app_settings():
+    assert Scope.APPS_SETTING_WRITE not in ROLE_SCOPES["readonly"]
+    assert Scope.APPS_SETTING_WRITE not in ROLE_SCOPES["operator"]
+    for role in ("app-admin", "package-developer", "administrator"):
+        assert Scope.APPS_SETTING_WRITE in ROLE_SCOPES[role], role
+
+
+def test_only_operator_and_above_can_stop_or_start_services():
+    # Same tier as services.restart - operator already has that.
+    assert Scope.SERVICES_STOP not in ROLE_SCOPES["readonly"]
+    assert Scope.SERVICES_START not in ROLE_SCOPES["readonly"]
+    for role in ("operator", "app-admin", "package-developer", "administrator"):
+        assert Scope.SERVICES_STOP in ROLE_SCOPES[role], role
+        assert Scope.SERVICES_START in ROLE_SCOPES[role], role

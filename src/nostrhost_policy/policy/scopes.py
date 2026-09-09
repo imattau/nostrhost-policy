@@ -1,0 +1,155 @@
+"""Scopes: the underlying authorization primitive (PLAN.md Phase 3).
+
+Roles (policy/roles.py) are just named groups of these. Tool handlers
+should always check a Scope, never a role directly, so role definitions
+can change without touching tool code.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class Scope(StrEnum):
+    SERVER_READ = "server.read"
+
+    DIAGNOSIS_READ = "diagnosis.read"
+
+    APPS_READ = "apps.read"
+    APPS_INSTALL = "apps.install"
+    APPS_UPGRADE = "apps.upgrade"
+    APPS_REMOVE = "apps.remove"
+    # app_config_get - safe for every role that already gets apps.read,
+    # same split as FIREWALL_READ/FIREWALL_WRITE below.
+    APPS_CONFIG_READ = "apps.config.read"
+    # app_config_set - an app's config-panel settings are arbitrary and
+    # app-defined (anything from a display name to, e.g., a relay's peer
+    # mesh or auth requirements) - broad enough to warrant its own scope
+    # rather than folding into APPS_UPGRADE, but bounded to one already-
+    # installed app's own declared options, not system-wide like
+    # firewall/system.upgrade - so confirmation-gated (policy/rules.py),
+    # not owner-signature-gated.
+    APPS_CONFIG_WRITE = "apps.config.write"
+
+    # app_setting_get/app_setting_set - one key in an already-installed
+    # app's settings.yml (yunohost.app.app_setting), narrower and more
+    # primitive than the config-panel-scoped keys above: most apps have no
+    # config_panel.toml at all, so this is the only bounded way to read or
+    # fix e.g. a stuck install_dir or a leftover value from a botched
+    # change_url. Same read/write split and same risk tiers as
+    # APPS_CONFIG_READ/APPS_CONFIG_WRITE - bounded to one app's own
+    # settings, not system-wide.
+    APPS_SETTING_READ = "apps.setting.read"
+    APPS_SETTING_WRITE = "apps.setting.write"
+
+    SERVICES_READ = "services.read"
+    SERVICES_RESTART = "services.restart"
+    # service_stop/service_start - split out from SERVICES_RESTART because
+    # stop isn't atomic like restart: a service stays down until something
+    # calls start, which is the actual outage risk (see policy/rules.py's
+    # "services.stop" entry for why stop, not start, is confirmation-gated).
+    SERVICES_STOP = "services.stop"
+    SERVICES_START = "services.start"
+
+    LOGS_READ = "logs.read"
+
+    BACKUPS_READ = "backups.read"
+    BACKUPS_CREATE = "backups.create"
+    BACKUPS_RESTORE = "backups.restore"
+    BACKUPS_DELETE = "backups.delete"
+
+    USERS_READ = "users.read"
+    USERS_WRITE = "users.write"
+    USERS_DELETE = "users.delete"
+
+    DOMAINS_READ = "domains.read"
+    DOMAINS_WRITE = "domains.write"
+
+    # Refreshes cached metadata only (apt cache, app catalog sources) -
+    # YunohostAdapter.updates_refresh(). Not
+    # to be confused with SYSTEM_UPGRADE, which actually installs updates.
+    SYSTEM_UPDATE = "system.update"
+    SYSTEM_UPGRADE = "system.upgrade"
+    # Actually running/skipping a migration (tools_migrations_run) -
+    # listing/state (migrations_list/migrations_state) sit under
+    # SYSTEM_UPDATE instead, same as pending_migrations already surfacing
+    # passively through validate_server/updates_refresh. Same app-admin-
+    # plus-owner-co-signature tier as SYSTEM_UPGRADE - migrations can carry
+    # irreversible OS/schema changes (e.g. a Debian version bump) in the
+    # same risk class.
+    SYSTEM_MIGRATE = "system.migrate"
+
+    # system_reboot/system_shutdown (tools_reboot/tools_shutdown) - takes
+    # the whole host down. Reboot recovers on its own; shutdown does not -
+    # without remote power management, an admin needs physical access to
+    # bring the server back. Same app-admin-plus-owner-co-signature tier as
+    # SYSTEM_UPGRADE (the owner co-signature is what stands between an
+    # agent and actually pulling this trigger), not a separate tier of its
+    # own - see policy/roles.py's _APP_ADMIN comment for why administrator-
+    # only isn't the right lever here either.
+    SYSTEM_POWER = "system.power"
+
+    # firewall_list/firewall_is_open - read-only, safe for every role that
+    # already gets services.read/domains.read.
+    FIREWALL_READ = "firewall.read"
+    # firewall_open/close/allow/disallow/reload/upnp/stop. Granted from
+    # app-admin up (policy/roles.py) and owner-co-signed on every call
+    # (policy/rules.py) - a wrong port/rule can lock the admin out of their
+    # own server with no MCP-level undo, PLAN.md's named example of exactly
+    # the risk class system.upgrade/backups.restore are already gated at,
+    # but that risk is covered by require_owner_signature (a *different*
+    # identity approving each call), not by restricting the scope itself to
+    # administrator - see policy/roles.py's _APP_ADMIN comment.
+    FIREWALL_WRITE = "firewall.write"
+
+    # settings_get/settings_list - YunoHost's global settings (SSO
+    # behavior, security toggles, misc display options). Read-only, safe
+    # for every role that already gets server.read.
+    SETTINGS_READ = "settings.read"
+    # settings_set - global settings apply server-wide (e.g. disabling
+    # password auth, SSO panel behavior) - same risk class and same
+    # app-admin-plus-owner-co-signature tier as FIREWALL_WRITE.
+    SETTINGS_WRITE = "settings.write"
+
+    # tools_regen_conf's list_pending mode - which system-service config
+    # files (nginx, ssowat, mysql, ...) are out of date vs. YunoHost's
+    # current internal state. Makes no changes, safe alongside the other
+    # *_READ scopes.
+    REGENCONF_READ = "regenconf.read"
+    # tools_regen_conf's apply mode - force=True can overwrite a manually-
+    # edited config file, and a bad regeneration of e.g. nginx/ssowat can
+    # lock the admin out same as FIREWALL_WRITE - same app-admin-plus-
+    # owner-co-signature tier.
+    REGENCONF_WRITE = "regenconf.write"
+
+    PACKAGES_INSPECT = "packages.inspect"
+    PACKAGES_TEST = "packages.test"
+
+    CATALOG_INSPECT = "catalog.inspect"
+    CATALOG_VERIFY = "catalog.verify"
+    CATALOG_PUBLISH = "catalog.publish"
+
+    # Optional post-publication announcements to a configured Concord/Armada
+    # community. This is separate from catalog.publish so the future tool can
+    # remain explicitly scoped while staying in the package-developer bundle.
+    ARMADA_WRITE = "communications.armada.write"
+
+    # Optional local Polypack integration.  These are intentionally separate
+    # from YunoHost administration scopes: memory is durable shared context,
+    # not a substitute for server/app authorization.
+    MEMORY_READ = "memory.read"
+    MEMORY_WRITE = "memory.write"
+    MEMORY_FEEDBACK = "memory.feedback"
+
+    # Not granted by any role except administrator (policy/roles.py) - this
+    # is what makes audit_list()/audit_get() "administrator-only" per
+    # PLAN.md Phase 10, without a role-name check in the tool itself.
+    AUDIT_READ = "audit.read"
+
+    # Same pattern, for Phase 13's owner co-signing: only administrator may
+    # call approve_operation() to co-sign another identity's pending
+    # high-risk confirmation (policy/rules.py's require_owner_signature).
+    OWNER_APPROVE = "owner.approve"
+
+
+ALL_SCOPES: frozenset[Scope] = frozenset(Scope)

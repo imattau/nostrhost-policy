@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from nostrhost_policy.auth.identity import IdentityConfigError, IdentityStore
+from nostrhost_policy.auth.npub import hex_to_npub
+from nostrhost_policy.policy.scopes import Scope
+
+HEX_PUBKEY = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240"
+
+
+def test_missing_file_yields_empty_store(tmp_path: Path):
+    store = IdentityStore.load(tmp_path / "does-not-exist.toml")
+    assert len(store) == 0
+    assert store.lookup(HEX_PUBKEY) is None
+
+
+def test_loads_npub_keyed_entry(tmp_path: Path):
+    npub = hex_to_npub(HEX_PUBKEY)
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{npub}"]
+name = "Codex development agent"
+roles = ["package-developer"]
+expires = "2099-12-31T00:00:00+00:00"
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    record = store.lookup(HEX_PUBKEY)
+    assert record is not None
+    assert record.name == "Codex development agent"
+    assert record.roles == ("package-developer",)
+    assert Scope.PACKAGES_TEST in record.scopes
+    assert record.expires == datetime(2099, 12, 31, tzinfo=timezone.utc)
+    assert not record.is_expired()
+
+
+def test_loads_optional_armada_key_path(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Agent A"
+roles = ["package-developer"]
+armada_key_path = "/etc/yunohost-mcp/armada-bot-agent-a.key"
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    record = store.lookup(HEX_PUBKEY)
+    assert record is not None
+    assert record.armada_key_path == Path("/etc/yunohost-mcp/armada-bot-agent-a.key")
+
+
+def test_armada_key_path_defaults_to_none_when_unset(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Agent B"
+roles = ["package-developer"]
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    record = store.lookup(HEX_PUBKEY)
+    assert record is not None
+    assert record.armada_key_path is None
+
+
+def test_non_string_armada_key_path_raises_config_error(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Broken"
+roles = ["package-developer"]
+armada_key_path = 5
+"""
+    )
+    with pytest.raises(IdentityConfigError):
+        IdentityStore.load(toml_path)
+
+
+def test_loads_hex_keyed_entry_without_expiry(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Admin"
+roles = ["administrator"]
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    record = store.lookup(HEX_PUBKEY)
+    assert record is not None
+    assert not record.is_expired()
+
+
+def test_expired_record_reports_expired(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Old agent"
+roles = ["readonly"]
+expires = "2000-01-01T00:00:00+00:00"
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    record = store.lookup(HEX_PUBKEY)
+    assert record is not None
+    assert record.is_expired()
+
+
+def test_unknown_role_raises_config_error(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Broken"
+roles = ["superuser"]
+"""
+    )
+    with pytest.raises(IdentityConfigError):
+        IdentityStore.load(toml_path)
+
+
+def test_nsec_key_rejected_loudly(tmp_path: Path):
+    # A private key accidentally pasted where a pubkey belongs must never
+    # be silently accepted (PLAN.md Phase 9: never store a private key).
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        """
+[identity."nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5"]
+name = "Oops"
+roles = ["administrator"]
+"""
+    )
+    with pytest.raises(IdentityConfigError, match="nsec"):
+        IdentityStore.load(toml_path)
+
+
+def test_malformed_hex_pubkey_rejected(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        '[identity."not-a-public-key"]\nname = "Broken"\nroles = ["readonly"]\n'
+    )
+    with pytest.raises(IdentityConfigError, match="64-character hexadecimal"):
+        IdentityStore.load(toml_path)
+
+
+def test_malformed_toml_raises_config_error(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text("this is not [valid toml")
+    with pytest.raises(IdentityConfigError):
+        IdentityStore.load(toml_path)
+
+
+def test_live_store_picks_up_changes_without_reconstruction(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    store = IdentityStore.live(toml_path)
+
+    # No file yet: deny-by-default, same as a static store over a missing file.
+    assert store.lookup(HEX_PUBKEY) is None
+    assert len(store) == 0
+
+    # An admin grants access by editing the file - no restart, no new store.
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Newly granted agent"
+roles = ["readonly"]
+"""
+    )
+    record = store.lookup(HEX_PUBKEY)
+    assert record is not None
+    assert record.name == "Newly granted agent"
+    assert len(store) == 1
+
+    # And revoking it (deleting the entry) takes effect immediately too.
+    toml_path.write_text("")
+    assert store.lookup(HEX_PUBKEY) is None
+    assert len(store) == 0
+
+
+def test_live_store_denies_everyone_on_transient_parse_error(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Admin"
+roles = ["administrator"]
+"""
+    )
+    store = IdentityStore.live(toml_path)
+    assert store.lookup(HEX_PUBKEY) is not None
+
+    # A mid-edit typo must not crash the request - it denies everyone
+    # (deny-by-default) rather than raising IdentityConfigError up through
+    # the middleware.
+    toml_path.write_text("this is not [valid toml")
+    assert store.lookup(HEX_PUBKEY) is None
+    assert len(store) == 0
+
+    # And recovers once the file is fixed again.
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Admin"
+roles = ["administrator"]
+"""
+    )
+    assert store.lookup(HEX_PUBKEY) is not None
+
+
+def test_pubkeys_with_role_finds_matching_entries(tmp_path: Path):
+    dev_pubkey = "aa" * 32
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Admin"
+roles = ["administrator"]
+
+[identity."{dev_pubkey}"]
+name = "Dev agent"
+roles = ["package-developer"]
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    assert store.pubkeys_with_role("administrator") == [HEX_PUBKEY]
+    assert store.pubkeys_with_role("owner") == []
+
+
+def test_pubkeys_with_role_on_empty_store(tmp_path: Path):
+    store = IdentityStore.load(tmp_path / "does-not-exist.toml")
+    assert store.pubkeys_with_role("administrator") == []
+
+
+def test_static_load_is_unaffected_by_later_file_changes(tmp_path: Path):
+    toml_path = tmp_path / "identity.toml"
+    toml_path.write_text(
+        f"""
+[identity."{HEX_PUBKEY}"]
+name = "Admin"
+roles = ["administrator"]
+"""
+    )
+    store = IdentityStore.load(toml_path)
+    toml_path.write_text("")
+    # .load() is a one-time snapshot: existing behavior/tests must not change.
+    assert store.lookup(HEX_PUBKEY) is not None
