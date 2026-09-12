@@ -64,6 +64,14 @@ class Scope(StrEnum):
 
     DOMAINS_READ = "domains.read"
     DOMAINS_WRITE = "domains.write"
+    # dns.apply - reconciles the zone through the provider (confirmation +
+    # owner co-signature, "domains.dns" policy rule).
+    DNS_WRITE = "dns.write"
+    # credential.set/remove - writes a provider token into the broker
+    # ("dns.credentials.write" rule: confirmation only). The token value is
+    # operator-supplied; references from then on are opaque secret: refs.
+    DNS_CREDENTIALS_WRITE = "dns.credentials.write"
+    DNS_CREDENTIALS_READ = "dns.credentials.read"
 
     # Refreshes cached metadata only (apt cache, app catalog sources) -
     # YunohostAdapter.updates_refresh(). Not

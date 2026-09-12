@@ -136,6 +136,10 @@ DEFAULT_POLICY: dict[str, PolicyRule] = {
     "domains.write": PolicyRule(require_confirmation=True),
     "domains.cert": PolicyRule(require_confirmation=True),
     "domains.dns": PolicyRule(require_confirmation=True, require_owner_signature=True),
+    # dns.credentials.write - writing a provider token to the broker; the
+    # token is host-side state an operator is responsible for, so confirmation
+    # (admin) is required but no owner signature is needed.
+    "dns.credentials.write": PolicyRule(require_confirmation=True),
     "packages.test": PolicyRule(require_confirmation=True, require_owner_signature=True),
     "apps.upgrade": PolicyRule(require_backup=True, minimum_free_space_bytes=_parse_size("2GB")),
     "apps.control_plane_upgrade": PolicyRule(
