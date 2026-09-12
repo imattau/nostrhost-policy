@@ -48,10 +48,26 @@ def is_sensitive_key(key: str) -> bool:
 
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: (REDACTED if is_sensitive_key(str(k)) else redact(v)) for k, v in value.items()}
+        return {k: (_redact_sensitive(str(k), v) if is_sensitive_key(str(k)) else redact(v)) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
+
+
+def _redact_sensitive(key: str, value: Any) -> Any:
+    """Redact a value whose key matches a sensitive marker.
+
+    Scalar values (an actual secret) are replaced wholesale. Containers are
+    recursed into instead of being replaced by the marker string: swapping a
+    dict/list for ``[REDACTED]`` changes the value's type and silently
+    corrupts structured payloads that must survive a round-trip (e.g. a plan
+    envelope re-submitted to package.reconcile after its result is redacted).
+    """
+    if isinstance(value, dict):
+        return redact(value)
+    if isinstance(value, list):
+        return [REDACTED if not isinstance(item, (dict, list)) else redact(item) for item in value]
+    return REDACTED
 
 
 _SENSITIVE_KV_PATTERN = re.compile(

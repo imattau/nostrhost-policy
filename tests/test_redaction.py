@@ -40,6 +40,23 @@ def test_redact_does_not_mutate_original():
     assert original == {"password": "hunter2"}
 
 
+def test_redact_preserves_container_values_under_sensitive_keys():
+    """A dict/list under a sensitive key must be recursed, not replaced by the
+    marker string: swapping ``[REDACTED]`` for a container changes the type and
+    corrupts structured payloads that must survive a round-trip (e.g. a plan
+    envelope re-submitted to package.reconcile after redaction)."""
+    assert redact({"secrets": {}}) == {"secrets": {}}
+    assert redact({"secrets": {"password": "x"}}) == {"secrets": {"password": "[REDACTED]"}}
+    assert redact({"tokens": ["a", "b"]}) == {"tokens": ["[REDACTED]", "[REDACTED]"]}
+    assert redact({"secrets": [{"token": "x"}]}) == {"secrets": [{"token": "[REDACTED]"}]}
+
+
+def test_redact_sensitive_scalars_still_replaced():
+    assert redact({"password": "hunter2"}) == {"password": "[REDACTED]"}
+    assert redact({"token": 12345}) == {"token": "[REDACTED]"}
+    assert redact({"secret": None}) == {"secret": "[REDACTED]"}
+
+
 def test_redact_response_decorator_redacts_dict_return_value():
     @redact_response
     def fn():
