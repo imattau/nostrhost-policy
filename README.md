@@ -22,7 +22,7 @@ says *not* to introduce a new policy engine while restructuring the system.
 | `policy.package_sessions` | package-test session store |
 | `auth.identity` | pubkey → role/scope identity store (`identity.toml`) + request-scoped resolution |
 | `auth.nip98` | NIP-98 HTTP-auth verification (kind 27235) |
-| `auth.nostr` | NIP-01 event model + verification (coincurve) |
+| `auth.nostr` | NIP-01 event model, signing, and verification (nostr-sdk) |
 | `auth.npub` | npub/nsec ↔ hex |
 | `auth.replay` | replay cache |
 | `auth.owner` | configured owner (NIP-46 co-signature target) |
