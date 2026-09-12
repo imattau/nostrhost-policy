@@ -1,6 +1,6 @@
 [project]
 name = "nostrhost-policy"
-version = "0.1.1"
+version = "0.1.2"
 description = "nostrhost reusable authorisation library: roles, scopes, NIP-98, delegations, approvals/confirmation, owner co-signature, audit"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

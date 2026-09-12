@@ -19,6 +19,11 @@ class Scope(StrEnum):
     APPS_INSTALL = "apps.install"
     APPS_UPGRADE = "apps.upgrade"
     APPS_REMOVE = "apps.remove"
+    # Coarse NostrHost-native write scope spanning install/upgrade/remove for
+    # the resource-engine reconciler (`package.reconcile` legitimately reaches
+    # more than one sub-action). Not part of the reference yunohost-mcp
+    # vocabulary (docs/MCP-TRANSITION.md §1).
+    APPS_WRITE = "apps.write"
     # app_config_get - safe for every role that already gets apps.read,
     # same split as FIREWALL_READ/FIREWALL_WRITE below.
     APPS_CONFIG_READ = "apps.config.read"
@@ -50,6 +55,11 @@ class Scope(StrEnum):
     # "services.stop" entry for why stop, not start, is confirmation-gated).
     SERVICES_STOP = "services.stop"
     SERVICES_START = "services.start"
+    # Coarse NostrHost-native write scope spanning restart/stop/start for
+    # bounded service-control primitives that legitimately reach more than
+    # one sub-action (e.g. `service.control`). Not part of the reference
+    # yunohost-mcp vocabulary (docs/MCP-TRANSITION.md §1).
+    SERVICES_WRITE = "services.write"
 
     LOGS_READ = "logs.read"
 
@@ -129,6 +139,12 @@ class Scope(StrEnum):
     # lock the admin out same as FIREWALL_WRITE - same app-admin-plus-
     # owner-co-signature tier.
     REGENCONF_WRITE = "regenconf.write"
+
+    # Coarse NostrHost-native scope for the ngit/NIP-34 state layer
+    # (rollback.apply, state.reconcile): applying a plan is a signed,
+    # approval-gated write to machine state. Not part of the reference
+    # yunohost-mcp vocabulary (docs/MCP-TRANSITION.md §1).
+    STATE_WRITE = "state.write"
 
     PACKAGES_INSPECT = "packages.inspect"
     PACKAGES_TEST = "packages.test"
