@@ -38,9 +38,8 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from nostrhost_policy.auth.identity import require_current_request
-from nostrhost_policy.auth.owner import OwnerConfigError
 from nostrhost_policy.policy.confirmation import ConfirmationError, ConfirmationStore, _hash_arguments, set_consumed_ticket
-from nostrhost_policy.policy.rules import PolicyRule, PolicyViolation
+from nostrhost_policy.policy.rules import PolicyRule
 from nostrhost_policy.policy.scopes import Scope
 
 F = TypeVar("F", bound=Callable)

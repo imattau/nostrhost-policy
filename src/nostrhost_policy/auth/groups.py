@@ -18,17 +18,6 @@ DEFAULT_GROUP_ROLES = {
 }
 
 
-def identity_store_for_settings(settings):
-    from nostrhost_policy.auth.identity import IdentityStore
-    from nostrhost_policy.auth.nostr_auth_lookup import lookup_linked_username
-
-    if settings.identity_backend == "toml":
-        return IdentityStore.live(settings.identity_file_path())
-    if settings.identity_backend == "yunohost_groups":
-        return GroupIdentityStore(lambda pubkey: lookup_linked_username(pubkey, settings=settings))
-    raise ValueError(f"unknown YUNOHOST_MCP_IDENTITY_BACKEND: {settings.identity_backend!r}")
-
-
 class GroupIdentityStore:
     """Resolve a pubkey via an external identity lookup, then local groups."""
 
