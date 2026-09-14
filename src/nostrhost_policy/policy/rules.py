@@ -134,6 +134,10 @@ def _parse_duration(value: str) -> int:
 DEFAULT_POLICY: dict[str, PolicyRule] = {
     "catalog.publish": PolicyRule(require_confirmation=True, require_owner_signature=True),
     "nsites.publish": PolicyRule(require_confirmation=True),
+    # Phase 4 custom-domain attach/detach: confirms ownership against live DNS
+    # and mutates Caddy + gateway config, so it is confirmation-gated like
+    # domains.write (which nsite.domain.attach/detach also require as a scope).
+    "nsite.domain.write": PolicyRule(require_confirmation=True),
     "domains.write": PolicyRule(require_confirmation=True),
     "domains.cert": PolicyRule(require_confirmation=True),
     "domains.dns": PolicyRule(require_confirmation=True, require_owner_signature=True),
