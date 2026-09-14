@@ -133,6 +133,7 @@ def _parse_duration(value: str) -> int:
 
 DEFAULT_POLICY: dict[str, PolicyRule] = {
     "catalog.publish": PolicyRule(require_confirmation=True, require_owner_signature=True),
+    "nsites.publish": PolicyRule(require_confirmation=True),
     "domains.write": PolicyRule(require_confirmation=True),
     "domains.cert": PolicyRule(require_confirmation=True),
     "domains.dns": PolicyRule(require_confirmation=True, require_owner_signature=True),

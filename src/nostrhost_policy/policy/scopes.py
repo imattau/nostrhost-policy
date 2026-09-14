@@ -175,5 +175,13 @@ class Scope(StrEnum):
     # high-risk confirmation (policy/rules.py's require_owner_signature).
     OWNER_APPROVE = "owner.approve"
 
+    # NIP-5A nsites (implementation plan §28 / D8): read covers gateway status
+    # and site reads; admin gates the gateway lifecycle (enable/disable/
+    # configure); publish is a per-subject capability granted to admins only
+    # until Phase 5.
+    NSITES_READ = "nsites.read"
+    NSITES_ADMIN = "nsites.admin"
+    NSITES_PUBLISH = "nsites.publish"
+
 
 ALL_SCOPES: frozenset[Scope] = frozenset(Scope)
