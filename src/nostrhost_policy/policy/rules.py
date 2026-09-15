@@ -38,9 +38,10 @@ right now", not "this needs a human to say yes".
 from __future__ import annotations
 
 import re
-import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from nostrhost_policy._toml_config import load_toml
 
 
 class PolicyConfigError(ValueError):
@@ -106,29 +107,36 @@ _SIZE_UNITS = {"": 1, "B": 1, "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 10
 _DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
-def _parse_size(value: str) -> int:
+def _parse_quantity(value: str, *, units: dict[str, int], kind: str, example: str, normalize_unit) -> int:
+    """Shared shape behind `_parse_size` and `_parse_duration`: a number
+    followed by an optional unit suffix, looked up in a unit->multiplier
+    table. `normalize_unit` maps the regex-captured suffix to a units-table
+    key the same way each original parser did (size uppercases; duration
+    lowercases and defaults an omitted suffix to "s") - the normalized unit
+    is also what the "unknown unit" error reports."""
     match = re.fullmatch(r"\s*(\d+)\s*([A-Za-z]*)\s*", value)
     if not match:
-        raise PolicyConfigError(f"not a size (e.g. '2GB', '512MB'): {value!r}")
-    number, unit = match.groups()
+        raise PolicyConfigError(f"not a {kind} (e.g. {example}): {value!r}")
+    number, raw_unit = match.groups()
+    unit = normalize_unit(raw_unit)
     try:
-        multiplier = _SIZE_UNITS[unit.upper()]
+        multiplier = units[unit]
     except KeyError:
-        raise PolicyConfigError(f"unknown size unit {unit!r} in {value!r}") from None
+        raise PolicyConfigError(f"unknown {kind} unit {unit!r} in {value!r}") from None
     return int(number) * multiplier
+
+
+def _parse_size(value: str) -> int:
+    return _parse_quantity(
+        value, units=_SIZE_UNITS, kind="size", example="'2GB', '512MB'", normalize_unit=str.upper
+    )
 
 
 def _parse_duration(value: str) -> int:
-    match = re.fullmatch(r"\s*(\d+)\s*([A-Za-z]*)\s*", value)
-    if not match:
-        raise PolicyConfigError(f"not a duration (e.g. '24h', '30m'): {value!r}")
-    number, unit = match.groups()
-    unit = unit.lower() or "s"
-    try:
-        multiplier = _DURATION_UNITS[unit]
-    except KeyError:
-        raise PolicyConfigError(f"unknown duration unit {unit!r} in {value!r}") from None
-    return int(number) * multiplier
+    return _parse_quantity(
+        value, units=_DURATION_UNITS, kind="duration", example="'24h', '30m'",
+        normalize_unit=lambda raw: raw.lower() or "s",
+    )
 
 
 DEFAULT_POLICY: dict[str, PolicyRule] = {
@@ -252,35 +260,32 @@ def load_policy(path: Path) -> dict[str, PolicyRule]:
     """DEFAULT_POLICY, with any [policy.<key>] sections in `path` overriding
     only the fields they set. A missing file means the defaults apply
     unmodified - this is a safety floor, not a feature you opt into."""
-    if not path.exists():
+    data = load_toml(path, PolicyConfigError)
+    if data is None:
         return dict(DEFAULT_POLICY)
 
-    try:
-        data = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as exc:
-        raise PolicyConfigError(f"{path}: invalid TOML: {exc}") from exc
+    # Maps each policy.toml key to the PolicyRule field it overrides and how
+    # to parse its raw TOML value. Adding a field to PolicyRule now means
+    # adding one entry here - not editing both an `overrides` block and a
+    # field-by-field PolicyRule(...) reconstruction, where a value can be
+    # dropped by forgetting the second edit.
+    _OVERRIDE_PARSERS = {
+        "require_confirmation": ("require_confirmation", bool),
+        "require_backup": ("require_backup", bool),
+        "minimum_free_space": ("minimum_free_space_bytes", lambda v: _parse_size(str(v))),
+        "max_backup_age": ("max_backup_age_seconds", lambda v: _parse_duration(str(v))),
+        "require_owner_signature": ("require_owner_signature", bool),
+    }
 
     rules = dict(DEFAULT_POLICY)
     for key, entry in data.get("policy", {}).items():
         base = rules.get(key, PolicyRule())
-        overrides: dict = {}
-        if "require_confirmation" in entry:
-            overrides["require_confirmation"] = bool(entry["require_confirmation"])
-        if "require_backup" in entry:
-            overrides["require_backup"] = bool(entry["require_backup"])
-        if "minimum_free_space" in entry:
-            overrides["minimum_free_space_bytes"] = _parse_size(str(entry["minimum_free_space"]))
-        if "max_backup_age" in entry:
-            overrides["max_backup_age_seconds"] = _parse_duration(str(entry["max_backup_age"]))
-        if "require_owner_signature" in entry:
-            overrides["require_owner_signature"] = bool(entry["require_owner_signature"])
-        rules[key] = PolicyRule(
-            require_confirmation=overrides.get("require_confirmation", base.require_confirmation),
-            require_backup=overrides.get("require_backup", base.require_backup),
-            minimum_free_space_bytes=overrides.get("minimum_free_space_bytes", base.minimum_free_space_bytes),
-            max_backup_age_seconds=overrides.get("max_backup_age_seconds", base.max_backup_age_seconds),
-            require_owner_signature=overrides.get("require_owner_signature", base.require_owner_signature),
-        )
+        overrides = {
+            field_name: parse(entry[toml_key])
+            for toml_key, (field_name, parse) in _OVERRIDE_PARSERS.items()
+            if toml_key in entry
+        }
+        rules[key] = replace(base, **overrides)
     return rules
 
 

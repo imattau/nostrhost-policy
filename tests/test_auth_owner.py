@@ -47,6 +47,17 @@ def test_explicit_owner_npub_rejects_malformed_npub(tmp_path: Path):
         resolve_owner_pubkey(owner_npub="npub1notreallyvalid", identity_store=store)
 
 
+def test_explicit_owner_npub_rejects_malformed_hex(tmp_path: Path):
+    """Regression test: owner.py's `_to_hex` used to skip the 64-character
+    hex-length check auth/identity.py's `_resolve_key_to_hex` enforces on
+    identity.toml entries, so a malformed owner_npub that wasn't an
+    npub1.../nsec1... string would silently pass through as a "pubkey" of
+    the wrong shape. Both now share auth/key_resolve.py's validation."""
+    store = _store_with_administrators(tmp_path, [])
+    with pytest.raises(OwnerConfigError, match="64-character hexadecimal"):
+        resolve_owner_pubkey(owner_npub="not-a-valid-hex-key", identity_store=store)
+
+
 def test_bootstrap_fallback_to_sole_administrator(tmp_path: Path):
     store = _store_with_administrators(tmp_path, [HEX_PUBKEY])
     assert resolve_owner_pubkey(owner_npub=None, identity_store=store) == HEX_PUBKEY

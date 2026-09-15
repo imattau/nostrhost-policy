@@ -11,14 +11,13 @@ module is deny-by-default.
 from __future__ import annotations
 
 import logging
-import re
-import tomllib
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from nostrhost_policy.auth.npub import Bech32Error, npub_to_hex
+from nostrhost_policy._toml_config import load_toml
+from nostrhost_policy.auth.key_resolve import resolve_pubkey_to_hex
 from nostrhost_policy.policy.roles import UnknownRoleError, scopes_for_roles
 from nostrhost_policy.policy.scopes import ALL_SCOPES, Scope
 
@@ -118,13 +117,9 @@ class IdentityStore:
 
 
 def _load_records(path: Path) -> dict[str, IdentityRecord]:
-    if not path.exists():
+    data = load_toml(path, IdentityConfigError)
+    if data is None:
         return {}
-
-    try:
-        data = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as exc:
-        raise IdentityConfigError(f"{path}: invalid TOML: {exc}") from exc
 
     records: dict[str, IdentityRecord] = {}
     for raw_key, entry in data.get("identity", {}).items():
@@ -154,27 +149,15 @@ def _load_records(path: Path) -> dict[str, IdentityRecord]:
 
 
 def _resolve_key_to_hex(raw_key: str) -> str:
-    if raw_key.startswith("nsec1"):
-        # identity.toml keys are public identities to authorize, never
-        # secrets - PLAN.md Phase 9: "private Nostr keys must never be
-        # stored by yunohost-mcp". Reject loudly rather than let an
-        # accidentally-pasted private key sit in a config file believing
-        # it's being used as a pubkey (bech32-decoding it as an npub would
-        # silently fail anyway with a confusing wrong-HRP error - this is
-        # the same failure, named for what it actually is).
-        raise IdentityConfigError(
-            "identity.toml key looks like an nsec (private key), not an npub/hex pubkey - "
-            "yunohost-mcp must never be given a private key"
-        )
-    if raw_key.startswith("npub1"):
-        try:
-            return npub_to_hex(raw_key)
-        except Bech32Error as exc:
-            raise IdentityConfigError(str(exc)) from exc
-    candidate = raw_key.lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", candidate):
-        raise IdentityConfigError("identity key must be an npub or 64-character hexadecimal public key")
-    return candidate
+    # identity.toml keys are public identities to authorize, never secrets -
+    # PLAN.md Phase 9: "private Nostr keys must never be stored by
+    # yunohost-mcp". Reject loudly rather than let an accidentally-pasted
+    # private key sit in a config file believing it's being used as a
+    # pubkey (bech32-decoding it as an npub would silently fail anyway with
+    # a confusing wrong-HRP error - this is the same failure, named for
+    # what it actually is). auth/owner.py's owner_npub goes through the
+    # same shared checks, including the 64-char hex validation below.
+    return resolve_pubkey_to_hex(raw_key, error_cls=IdentityConfigError, subject="identity.toml key")
 
 
 @dataclass(frozen=True)

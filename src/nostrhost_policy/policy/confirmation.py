@@ -95,23 +95,60 @@ def _operation_hash(*, confirmation_id: str, pubkey: str, tool: str, arguments: 
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
 
 
-class ConfirmationStore:
-    """In-memory, single-process (see auth/replay.py's ReplayCache for the
-    same caveat: a multi-worker deployment needs a shared store). v1
-    (owner-approval-plan.md) accepts this for a single-operator deployment
-    rather than adding persistence - documented as a real limitation, not
-    silently papered over."""
+class _ConfirmationSession:
+    """Backend-specific handle for one atomic unit of work against the
+    pending-tickets store (a dict lookup for ``ConfirmationStore``, a single
+    SQLite transaction for ``SQLiteConfirmationStore``). Subclasses implement
+    only the row I/O (``get``/``insert``/``delete``/``update_owner``/``exists``/
+    ``count``); the validation and state-transition rules that used to be
+    duplicated between the two stores live once, below, in ``get_live`` and in
+    ``_ConfirmationCore``."""
 
-    def __init__(self, ttl_seconds: int = 300, *, owner_approval_ttl_seconds: int | None = None) -> None:
-        self._ttl_seconds = ttl_seconds
-        # Owner-approval tickets (require_owner_signature) need enough time
-        # for a human to open a separate NIP-46 signer app and act, not
-        # just enough for a same-session confirm-then-retry - defaults to
-        # the ordinary TTL when not given a longer one explicitly.
-        self._owner_approval_ttl_seconds = (
-            owner_approval_ttl_seconds if owner_approval_ttl_seconds is not None else ttl_seconds
-        )
-        self._pending: dict[str, ConfirmationTicket] = {}
+    def get(self, confirmation_id: str) -> ConfirmationTicket | None:
+        raise NotImplementedError
+
+    def insert(self, ticket: ConfirmationTicket) -> None:
+        raise NotImplementedError
+
+    def delete(self, confirmation_id: str) -> None:
+        raise NotImplementedError
+
+    def update_owner(self, confirmation_id: str, approver_pubkey: str) -> None:
+        raise NotImplementedError
+
+    def exists(self, confirmation_id: str) -> bool:
+        raise NotImplementedError
+
+    def count(self) -> int:
+        raise NotImplementedError
+
+    def get_live(self, confirmation_id: str) -> ConfirmationTicket:
+        """Fetch a pending ticket, raising the same ``ConfirmationError`` both
+        stores have always raised for an unknown id or an expired one (an
+        expired ticket is deleted as a side effect of being detected, same as
+        before)."""
+        ticket = self.get(confirmation_id)
+        if ticket is None:
+            raise ConfirmationError("unknown or already-used confirmation_id")
+        if time.time() >= ticket.expires_at:
+            self.delete(confirmation_id)
+            raise ConfirmationError("confirmation has expired")
+        return ticket
+
+
+class _ConfirmationCore:
+    """Backend-agnostic create/approve/peek/consume/finalize logic shared by
+    ``ConfirmationStore`` (in-memory) and ``SQLiteConfirmationStore``. A
+    subclass supplies ``_session()``, a context manager yielding a
+    ``_ConfirmationSession`` scoped to one atomic operation; everything else -
+    TTL selection, ownership/tool/argument checks, and which failures delete
+    the ticket versus leave it pending for retry - lives here exactly once."""
+
+    _ttl_seconds: int
+    _owner_approval_ttl_seconds: int
+
+    def _session(self) -> Any:
+        raise NotImplementedError
 
     def create(
         self,
@@ -137,7 +174,8 @@ class ConfirmationStore:
                 confirmation_id=confirmation_id, pubkey=pubkey, tool=tool, arguments=arguments
             ),
         )
-        self._pending[ticket.confirmation_id] = ticket
+        with self._session() as session:
+            session.insert(ticket)
         return ticket
 
     def approve(self, confirmation_id: str, *, approver_pubkey: str, owner_pubkey: str) -> ConfirmationTicket:
@@ -148,30 +186,20 @@ class ConfirmationStore:
         (auth/owner.py) allowed to approve; server.py's approve_operation
         resolves it fresh on every call and passes it in here rather than
         this store owning owner configuration itself."""
-        ticket = self._pending.get(confirmation_id)
-        if ticket is None:
-            raise ConfirmationError("unknown or already-used confirmation_id")
-        if time.time() >= ticket.expires_at:
-            del self._pending[confirmation_id]
-            raise ConfirmationError("confirmation has expired")
-        if approver_pubkey != owner_pubkey:
-            raise ConfirmationError(
-                "approver is not the configured owner - owner co-signing requires the exact "
-                "configured owner identity to sign the approval"
-            )
-        updated = dataclasses.replace(ticket, owner_approved_by=approver_pubkey)
-        self._pending[confirmation_id] = updated
-        return updated
+        with self._session() as session:
+            ticket = session.get_live(confirmation_id)
+            if approver_pubkey != owner_pubkey:
+                raise ConfirmationError(
+                    "approver is not the configured owner - owner co-signing requires the exact "
+                    "configured owner identity to sign the approval"
+                )
+            session.update_owner(confirmation_id, approver_pubkey)
+            return dataclasses.replace(ticket, owner_approved_by=approver_pubkey)
 
     def peek(self, confirmation_id: str) -> ConfirmationTicket:
         """Return a pending ticket without consuming it."""
-        ticket = self._pending.get(confirmation_id)
-        if ticket is None:
-            raise ConfirmationError("unknown or already-used confirmation_id")
-        if time.time() >= ticket.expires_at:
-            del self._pending[confirmation_id]
-            raise ConfirmationError("confirmation has expired")
-        return ticket
+        with self._session() as session:
+            return session.get_live(confirmation_id)
 
     def consume(
         self,
@@ -193,40 +221,95 @@ class ConfirmationStore:
         state - so the ticket is left in place for a later successful
         consume() once it has been approved.
         """
-        ticket = self._pending.get(confirmation_id)
-        if ticket is None:
-            raise ConfirmationError("unknown or already-used confirmation_id")
-        if time.time() >= ticket.expires_at:
-            del self._pending[confirmation_id]
-            raise ConfirmationError("confirmation has expired")
-        if ticket.pubkey != pubkey:
-            del self._pending[confirmation_id]
-            raise ConfirmationError("confirmation was issued to a different identity")
-        if ticket.tool != tool:
-            del self._pending[confirmation_id]
-            raise ConfirmationError("confirmation was issued for a different tool")
-        if ticket.arguments_hash != _hash_arguments(arguments):
-            del self._pending[confirmation_id]
-            raise ConfirmationError("confirmation does not match these exact arguments")
-        if require_owner_approval and ticket.owner_approved_by is None:
-            raise ConfirmationError(
-                "this operation requires owner co-signature - use approve_operation() first"
-            )
-        if not defer:
-            del self._pending[confirmation_id]
-        return ticket
+        with self._session() as session:
+            ticket = session.get_live(confirmation_id)
+            if ticket.pubkey != pubkey:
+                session.delete(confirmation_id)
+                raise ConfirmationError("confirmation was issued to a different identity")
+            if ticket.tool != tool:
+                session.delete(confirmation_id)
+                raise ConfirmationError("confirmation was issued for a different tool")
+            if ticket.arguments_hash != _hash_arguments(arguments):
+                session.delete(confirmation_id)
+                raise ConfirmationError("confirmation does not match these exact arguments")
+            if require_owner_approval and ticket.owner_approved_by is None:
+                raise ConfirmationError(
+                    "this operation requires owner co-signature - use approve_operation() first"
+                )
+            if not defer:
+                session.delete(confirmation_id)
+            return ticket
 
     def finalize(self, confirmation_id: str) -> None:
         """Consume a ticket previously validated with ``defer=True``."""
-        if confirmation_id not in self._pending:
-            raise ConfirmationError("unknown or already-used confirmation_id")
-        del self._pending[confirmation_id]
+        with self._session() as session:
+            if not session.exists(confirmation_id):
+                raise ConfirmationError("unknown or already-used confirmation_id")
+            session.delete(confirmation_id)
 
     def __len__(self) -> int:
+        with self._session() as session:
+            return session.count()
+
+
+class ConfirmationStore(_ConfirmationCore):
+    """In-memory, single-process (see auth/replay.py's ReplayCache for the
+    same caveat: a multi-worker deployment needs a shared store). v1
+    (owner-approval-plan.md) accepts this for a single-operator deployment
+    rather than adding persistence - documented as a real limitation, not
+    silently papered over."""
+
+    def __init__(self, ttl_seconds: int = 300, *, owner_approval_ttl_seconds: int | None = None) -> None:
+        self._ttl_seconds = ttl_seconds
+        # Owner-approval tickets (require_owner_signature) need enough time
+        # for a human to open a separate NIP-46 signer app and act, not
+        # just enough for a same-session confirm-then-retry - defaults to
+        # the ordinary TTL when not given a longer one explicitly.
+        self._owner_approval_ttl_seconds = (
+            owner_approval_ttl_seconds if owner_approval_ttl_seconds is not None else ttl_seconds
+        )
+        self._pending: dict[str, ConfirmationTicket] = {}
+
+    def _session(self) -> "_InMemorySession":
+        return _InMemorySession(self._pending)
+
+
+class _InMemorySession(_ConfirmationSession):
+    """No real transaction is needed for the in-memory backend - a single
+    call into the store is already atomic under the GIL - so this just wraps
+    the shared ``dict`` in the session interface ``_ConfirmationCore``
+    expects."""
+
+    def __init__(self, pending: dict[str, ConfirmationTicket]) -> None:
+        self._pending = pending
+
+    def __enter__(self) -> "_InMemorySession":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def get(self, confirmation_id: str) -> ConfirmationTicket | None:
+        return self._pending.get(confirmation_id)
+
+    def insert(self, ticket: ConfirmationTicket) -> None:
+        self._pending[ticket.confirmation_id] = ticket
+
+    def delete(self, confirmation_id: str) -> None:
+        self._pending.pop(confirmation_id, None)
+
+    def update_owner(self, confirmation_id: str, approver_pubkey: str) -> None:
+        ticket = self._pending[confirmation_id]
+        self._pending[confirmation_id] = dataclasses.replace(ticket, owner_approved_by=approver_pubkey)
+
+    def exists(self, confirmation_id: str) -> bool:
+        return confirmation_id in self._pending
+
+    def count(self) -> int:
         return len(self._pending)
 
 
-class SQLiteConfirmationStore:
+class SQLiteConfirmationStore(_ConfirmationCore):
     """Cross-process confirmation store for the frontend and root helper.
 
     SQLite supplies the transaction boundary that the original in-memory
@@ -258,92 +341,65 @@ class SQLiteConfirmationStore:
         db.execute("PRAGMA busy_timeout=30000")
         return db
 
-    def create(self, *, pubkey, tool, arguments, plan, require_owner_signature=False):
-        now = time.time()
-        confirmation_id = f"confirm-{uuid.uuid4().hex[:20]}"
-        ticket = ConfirmationTicket(
-            confirmation_id=confirmation_id, pubkey=pubkey, tool=tool,
-            arguments_hash=_hash_arguments(arguments), plan=plan, created_at=now,
-            expires_at=now + (self._owner_approval_ttl_seconds if require_owner_signature else self._ttl_seconds),
-            operation_hash=_operation_hash(confirmation_id=confirmation_id, pubkey=pubkey, tool=tool, arguments=arguments),
-        )
-        with self._connect() as db:
-            db.execute("INSERT INTO confirmations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", self._row(ticket))
-        return ticket
+    def _session(self) -> "_SQLiteSession":
+        return _SQLiteSession(self._connect())
 
-    def approve(self, confirmation_id, *, approver_pubkey, owner_pubkey):
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            ticket = self._get(db, confirmation_id)
-            self._check_live(db, ticket)
-            if approver_pubkey != owner_pubkey:
-                db.rollback()
-                raise ConfirmationError("approver is not the configured owner - owner co-signing requires the exact configured owner identity to sign the approval")
-            db.execute("UPDATE confirmations SET owner_approved_by=? WHERE id=?", (approver_pubkey, confirmation_id))
-            db.commit()
-            return dataclasses.replace(ticket, owner_approved_by=approver_pubkey)
 
-    def peek(self, confirmation_id):
-        with self._connect() as db:
-            ticket = self._get(db, confirmation_id)
-            self._check_live(db, ticket)
-            return ticket
+class _SQLiteSession(_ConfirmationSession):
+    """One SQLite transaction (``BEGIN IMMEDIATE`` ... commit/rollback),
+    matching the atomicity the original hand-written methods each opened for
+    themselves: every check-then-mutate sequence in ``_ConfirmationCore`` now
+    runs inside a single session instead of one per store method."""
 
-    def consume(self, confirmation_id, *, pubkey, tool, arguments, require_owner_approval=False, defer=False):
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            ticket = self._get(db, confirmation_id)
-            self._check_live(db, ticket)
-            if ticket.pubkey != pubkey:
-                self._delete_and_raise(db, confirmation_id, "confirmation was issued to a different identity")
-            if ticket.tool != tool:
-                self._delete_and_raise(db, confirmation_id, "confirmation was issued for a different tool")
-            if ticket.arguments_hash != _hash_arguments(arguments):
-                self._delete_and_raise(db, confirmation_id, "confirmation does not match these exact arguments")
-            if require_owner_approval and ticket.owner_approved_by is None:
-                db.rollback()
-                raise ConfirmationError("this operation requires owner co-signature - use approve_operation() first")
-            if not defer:
-                db.execute("DELETE FROM confirmations WHERE id=?", (confirmation_id,))
-            db.commit()
-            return ticket
+    def __init__(self, db: sqlite3.Connection) -> None:
+        self._db = db
 
-    def finalize(self, confirmation_id):
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM confirmations WHERE id=?", (confirmation_id,)).fetchone() is None:
-                db.rollback()
-                raise ConfirmationError("unknown or already-used confirmation_id")
-            db.execute("DELETE FROM confirmations WHERE id=?", (confirmation_id,))
-            db.commit()
+    def __enter__(self) -> "_SQLiteSession":
+        self._db.execute("BEGIN IMMEDIATE")
+        return self
 
-    def __len__(self):
-        with self._connect() as db:
-            return db.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0]
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        # Every original method - success or a validation failure that
+        # raises ConfirmationError - committed before returning/raising, so
+        # a delete that happened just before a raise (expired ticket, wrong
+        # pubkey/tool/arguments) is preserved rather than rolled back. Only
+        # a failure with no prior mutation (e.g. a non-owner approver, or a
+        # still-pending owner-approval requirement) used to call rollback(),
+        # which is behaviorally identical to commit() when nothing changed.
+        # Committing unconditionally here reproduces both cases exactly.
+        try:
+            self._db.commit()
+        finally:
+            self._db.close()
+        return False
 
-    @staticmethod
-    def _row(ticket):
-        return (ticket.confirmation_id, ticket.pubkey, ticket.tool, ticket.arguments_hash, json.dumps(ticket.plan), ticket.created_at, ticket.expires_at, ticket.operation_hash, ticket.owner_approved_by)
-
-    @staticmethod
-    def _get(db, confirmation_id):
-        row = db.execute("SELECT * FROM confirmations WHERE id=?", (confirmation_id,)).fetchone()
+    def get(self, confirmation_id: str) -> ConfirmationTicket | None:
+        row = self._db.execute("SELECT * FROM confirmations WHERE id=?", (confirmation_id,)).fetchone()
         if row is None:
-            raise ConfirmationError("unknown or already-used confirmation_id")
+            return None
         return ConfirmationTicket(row[0], row[1], row[2], row[3], json.loads(row[4]), row[5], row[6], row[7], row[8])
 
-    @staticmethod
-    def _check_live(db, ticket):
-        if time.time() >= ticket.expires_at:
-            db.execute("DELETE FROM confirmations WHERE id=?", (ticket.confirmation_id,))
-            db.commit()
-            raise ConfirmationError("confirmation has expired")
+    def insert(self, ticket: ConfirmationTicket) -> None:
+        self._db.execute("INSERT INTO confirmations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", self._row(ticket))
+
+    def delete(self, confirmation_id: str) -> None:
+        self._db.execute("DELETE FROM confirmations WHERE id=?", (confirmation_id,))
+
+    def update_owner(self, confirmation_id: str, approver_pubkey: str) -> None:
+        self._db.execute("UPDATE confirmations SET owner_approved_by=? WHERE id=?", (approver_pubkey, confirmation_id))
+
+    def exists(self, confirmation_id: str) -> bool:
+        return self._db.execute("SELECT 1 FROM confirmations WHERE id=?", (confirmation_id,)).fetchone() is not None
+
+    def count(self) -> int:
+        return self._db.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0]
 
     @staticmethod
-    def _delete_and_raise(db, confirmation_id, message):
-        db.execute("DELETE FROM confirmations WHERE id=?", (confirmation_id,))
-        db.commit()
-        raise ConfirmationError(message)
+    def _row(ticket: ConfirmationTicket):
+        return (
+            ticket.confirmation_id, ticket.pubkey, ticket.tool, ticket.arguments_hash, json.dumps(ticket.plan),
+            ticket.created_at, ticket.expires_at, ticket.operation_hash, ticket.owner_approved_by,
+        )
 
 
 _consumed_ticket: ContextVar[ConfirmationTicket | None] = ContextVar("consumed_confirmation_ticket", default=None)
