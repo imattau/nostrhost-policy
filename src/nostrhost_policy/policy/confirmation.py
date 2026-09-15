@@ -56,9 +56,68 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from nostrhost_policy.auth.nostr import NostrEvent, NostrEventError, verify_event
+
 
 class ConfirmationError(ValueError):
     """A confirmation_id is unknown, expired, already used, or doesn't match this request."""
+
+
+# Application-specific owner-approval kind, shared with yunohost-mcp's
+# push_approval.py (BUD-like helper event never published to a relay by us).
+# Chosen clear of NIP-98 (27235) so a signer app never conflates the two.
+OWNER_APPROVAL_KIND = 24243
+
+
+def _parse_owner_approval(signed_approval: str | dict[str, Any] | NostrEvent) -> NostrEvent:
+    """Coerce a signed owner-approval event to a :class:`NostrEvent`.
+
+    Accepts a JSON string, a plain dict, or an already-parsed ``NostrEvent``
+    (the pydantic model) so callers that hold the model directly (e.g. the
+    push-approval callback) do not need to round-trip it through JSON."""
+    if isinstance(signed_approval, NostrEvent):
+        return signed_approval
+    if isinstance(signed_approval, dict):
+        data = signed_approval
+    elif isinstance(signed_approval, str):
+        try:
+            data = json.loads(signed_approval)
+        except json.JSONDecodeError as exc:
+            raise ConfirmationError(f"owner approval must be JSON: {exc}") from exc
+    else:
+        raise ConfirmationError("owner approval must be a signed Nostr event (JSON string or object)")
+    try:
+        return NostrEvent.model_validate(data)
+    except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> ConfirmationError
+        raise ConfirmationError(f"malformed owner approval event: {exc}") from exc
+
+
+def _verify_owner_approval(event: NostrEvent, *, owner_pubkey: str, confirmation_id: str, operation_hash: str) -> str:
+    """Cryptographically verify an owner-approval event binds the configured
+    owner to this exact ticket (M11).
+
+    ``approve()`` relies on this - never on a caller-supplied pubkey string -
+    so a forged/guessed ``approver_pubkey`` can no longer mark a ticket
+    approved. Checks, in order: a valid NIP-01 signature (id + schnorr), the
+    author is exactly the configured owner, the event is a kind-24243 owner
+    approval, and its ``confirmation_id``/``operation_hash`` tags match this
+    ticket - the signer must have signed *this* operation, not some other
+    event. Returns the owner pubkey (the approved_by identity).
+    """
+    try:
+        verify_event(event)
+    except NostrEventError as exc:
+        raise ConfirmationError(f"owner approval signature invalid: {exc}") from exc
+    if event.pubkey != owner_pubkey:
+        raise ConfirmationError(
+            "owner approval is not signed by the configured owner - owner co-signing requires the "
+            "exact configured owner identity to sign the approval"
+        )
+    if event.kind != OWNER_APPROVAL_KIND:
+        raise ConfirmationError("owner approval must be a kind-24243 approval event")
+    if event.tag("confirmation_id") != confirmation_id or event.tag("operation_hash") != operation_hash:
+        raise ConfirmationError("owner approval does not match this confirmation (confirmation_id/operation_hash mismatch)")
+    return event.pubkey
 
 
 @dataclass(frozen=True)
@@ -178,23 +237,28 @@ class _ConfirmationCore:
             session.insert(ticket)
         return ticket
 
-    def approve(self, confirmation_id: str, *, approver_pubkey: str, owner_pubkey: str) -> ConfirmationTicket:
+    def approve(
+        self, confirmation_id: str, *, owner_pubkey: str, signed_approval: str | dict[str, Any]
+    ) -> ConfirmationTicket:
         """Owner co-signing (Phase 13, narrowed to v1's `solo` profile by
         owner-approval-plan.md): marks a pending ticket approved, without
         consuming it - the original requester still has to call consume()
         themselves to actually execute. `owner_pubkey` is the one identity
-        (auth/owner.py) allowed to approve; server.py's approve_operation
-        resolves it fresh on every call and passes it in here rather than
-        this store owning owner configuration itself."""
+        (auth/owner.py) allowed to approve; the approval is only accepted
+        once ``signed_approval`` - a kind-24243 event authored by that owner
+        over this exact ticket - has been cryptographically verified (M11).
+        The bare-identity ``approver_pubkey`` comparison that v1 started with
+        is gone: the store no longer trusts a caller-supplied pubkey string."""
         with self._session() as session:
             ticket = session.get_live(confirmation_id)
-            if approver_pubkey != owner_pubkey:
-                raise ConfirmationError(
-                    "approver is not the configured owner - owner co-signing requires the exact "
-                    "configured owner identity to sign the approval"
-                )
-            session.update_owner(confirmation_id, approver_pubkey)
-            return dataclasses.replace(ticket, owner_approved_by=approver_pubkey)
+            approver = _verify_owner_approval(
+                _parse_owner_approval(signed_approval),
+                owner_pubkey=owner_pubkey,
+                confirmation_id=ticket.confirmation_id,
+                operation_hash=ticket.operation_hash,
+            )
+            session.update_owner(confirmation_id, approver)
+            return dataclasses.replace(ticket, owner_approved_by=approver)
 
     def peek(self, confirmation_id: str) -> ConfirmationTicket:
         """Return a pending ticket without consuming it."""
@@ -343,7 +407,6 @@ class SQLiteConfirmationStore(_ConfirmationCore):
 
     def _session(self) -> "_SQLiteSession":
         return _SQLiteSession(self._connect())
-
 
 class _SQLiteSession(_ConfirmationSession):
     """One SQLite transaction (``BEGIN IMMEDIATE`` ... commit/rollback),
