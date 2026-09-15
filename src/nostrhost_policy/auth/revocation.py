@@ -16,8 +16,9 @@ actual gate is the delegation's own expiry and its delegator's standing
 from __future__ import annotations
 
 import logging
-import tomllib
 from pathlib import Path
+
+from nostrhost_policy._toml_config import load_toml
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,9 @@ class RevocationConfigError(ValueError):
 
 
 def _load_revoked_ids(path: Path) -> frozenset[str]:
-    if not path.exists():
+    data = load_toml(path, RevocationConfigError)
+    if data is None:
         return frozenset()
-    try:
-        data = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as exc:
-        raise RevocationConfigError(f"{path}: invalid TOML: {exc}") from exc
     ids = data.get("revoked", [])
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
         raise RevocationConfigError(f"{path}: 'revoked' must be a list of event id strings")

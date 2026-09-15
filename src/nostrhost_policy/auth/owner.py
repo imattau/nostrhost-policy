@@ -24,7 +24,7 @@ Resolution order:
 from __future__ import annotations
 
 from nostrhost_policy.auth.identity import IdentityStore
-from nostrhost_policy.auth.npub import Bech32Error, npub_to_hex
+from nostrhost_policy.auth.key_resolve import resolve_pubkey_to_hex
 
 
 class OwnerConfigError(ValueError):
@@ -42,17 +42,9 @@ def resolve_owner_pubkey(*, owner_npub: str | None, identity_store: IdentityStor
 
 
 def _to_hex(raw: str) -> str:
-    if raw.startswith("nsec1"):
-        # Owner config, like identity.toml, names a public identity - never
-        # a secret (PLAN.md Phase 9). See auth/identity.py's
-        # _resolve_key_to_hex for the same guard on identity.toml entries.
-        raise OwnerConfigError(
-            "owner_npub looks like an nsec (private key), not an npub/hex pubkey - "
-            "yunohost-mcp must never be given a private key"
-        )
-    if raw.startswith("npub1"):
-        try:
-            return npub_to_hex(raw)
-        except Bech32Error as exc:
-            raise OwnerConfigError(f"owner_npub {raw!r} is not a valid npub: {exc}") from exc
-    return raw.lower()
+    # Owner config, like identity.toml, names a public identity - never a
+    # secret (PLAN.md Phase 9), and is held to the same 64-character hex
+    # validation identity.toml entries get (auth/key_resolve.py) - a
+    # malformed owner_npub is rejected here rather than silently accepted
+    # as a "pubkey" that happens to be the wrong shape.
+    return resolve_pubkey_to_hex(raw, error_cls=OwnerConfigError, subject="owner_npub")
