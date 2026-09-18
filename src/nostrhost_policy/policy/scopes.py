@@ -145,6 +145,9 @@ class Scope(StrEnum):
     # approval-gated write to machine state. Not part of the reference
     # yunohost-mcp vocabulary (docs/MCP-TRANSITION.md §1).
     STATE_WRITE = "state.write"
+    # Read side of the state layer: revision/known-good/drift, history, diff
+    # and rollback planning. Safe for any role that can read recovery status.
+    STATE_READ = "state.read"
 
     PACKAGES_INSPECT = "packages.inspect"
     PACKAGES_TEST = "packages.test"

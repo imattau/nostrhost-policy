@@ -199,7 +199,15 @@ DEFAULT_POLICY: dict[str, PolicyRule] = {
     # "domain removal", "user deletion", "permission changes", and
     # "firewall changes" are all implemented as tools (below), matching
     # what Phase 13 names them as.
-    "backups.restore": PolicyRule(require_confirmation=True, require_owner_signature=True),
+    # Restoring a Restic snapshot overwrites live files, but it is the
+    # recovery path an administrator needs in an incident: confirmation (admin)
+    # is required, not a second identity's owner co-signature. backups.delete
+    # stays owner-gated (irreversible pruning of recoverable data).
+    "backups.restore": PolicyRule(require_confirmation=True),
+    # state.write covers rollback.apply / state.reconcile (recovery actions
+    # against the ngit state repo) and state.publish (disaster-recovery
+    # replication). Confirmation-gated like backups.restore.
+    "state.write": PolicyRule(require_confirmation=True),
     # Unconditionally owner-signature-gated regardless of remove_apps -
     # same "argument-conditional policy isn't supported" limitation noted
     # above for apps.remove's purge, so the stricter tier applies always
