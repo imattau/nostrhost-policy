@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from nostrhost_policy.auth.nip98 import verify_nip98_request
-from nostrhost_policy.auth.npub import hex_to_nsec
-from nostrhost_policy.auth.replay import ReplayCache
-from nostrhost_policy.auth.signing import ClientIdentity, KeyLoadError
+from nostrhost_auth.nip98 import verify_nip98_request
+from nostrhost_auth.keys import hex_to_nsec
+from nostrhost_auth.replay import ReplayCache
+from nostrhost_auth.signing import ClientIdentity, KeyLoadError
 
 
 def test_from_key_string_accepts_raw_hex():
@@ -62,7 +62,7 @@ def test_sign_nip98_binds_the_payload_hash_for_a_body():
     assert verified.pubkey == identity.pubkey_hex
 
     # Tampering with the body after the fact must be rejected.
-    from nostrhost_policy.auth.nip98 import Nip98Error
+    from nostrhost_auth.nip98 import Nip98Error
 
     with pytest.raises(Nip98Error, match="payload"):
         verify_nip98_request(
@@ -82,7 +82,7 @@ def test_signed_header_cannot_be_reused_across_requests():
     cache = ReplayCache()
     verify_nip98_request(authorization_header=header, method="GET", url=url, body=b"", replay_cache=cache)
 
-    from nostrhost_policy.auth.nip98 import Nip98Error
+    from nostrhost_auth.nip98 import Nip98Error
 
     with pytest.raises(Nip98Error, match="already used"):
         verify_nip98_request(authorization_header=header, method="GET", url=url, body=b"", replay_cache=cache)

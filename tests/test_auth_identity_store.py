@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from nostrhost_policy.auth.identity import IdentityConfigError, IdentityStore
-from nostrhost_policy.auth.npub import hex_to_npub
+from nostrhost_auth.keys import hex_to_npub
 from nostrhost_policy.policy.scopes import Scope
 
 HEX_PUBKEY = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240"

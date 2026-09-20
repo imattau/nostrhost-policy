@@ -1,149 +1,39 @@
-"""Nostr event model, id computation, and signature verification (NIP-01).
+"""Compatibility re-export of the canonical Nostr event model (NIP-01).
 
-This module knows nothing about HTTP or NIP-98 — it is the generic
-"is this a validly-signed Nostr event" primitive that nip98.py builds on.
-
-Key handling, event signing, and signature verification all delegate to the
-nostr-sdk (rust-nostr) bindings rather than hand-rolled secp256k1.
+The generic Nostr event model moved to ``nostrhost_auth.events``. This module
+re-exports the same names and exception classes (exception identity preserved)
+so existing ``nostrhost_policy.auth.nostr`` import paths keep working for one
+release. New code should import from :mod:`nostrhost_auth.events` directly.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import time
+import warnings
 
-from nostr_sdk import Event, EventBuilder, Keys, Kind, Tag, Timestamp
-from pydantic import BaseModel, field_validator
+from nostrhost_auth.events import (
+    HEX32_LEN,
+    HEX64_LEN,
+    NostrEvent,
+    NostrEventError,
+    UnsignedNostrEvent,
+    compute_event_id,
+    sign_event,
+    verify_event,
+)
 
-HEX32_LEN = 64  # 32 bytes as hex
-HEX64_LEN = 128  # 64 bytes as hex (schnorr signature)
+warnings.warn(
+    "nostrhost_policy.auth.nostr is deprecated; import from nostrhost_auth.events",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-
-class NostrEventError(ValueError):
-    """A Nostr event is malformed, has a bad id, or has an invalid signature."""
-
-
-class NostrEvent(BaseModel):
-    """A signed Nostr event (NIP-01), as delivered over the wire."""
-
-    id: str
-    pubkey: str
-    created_at: int
-    kind: int
-    tags: list[list[str]]
-    content: str
-    sig: str
-
-    @field_validator("id", "pubkey")
-    @classmethod
-    def _validate_hex32(cls, v: str) -> str:
-        if len(v) != HEX32_LEN or not _is_hex(v):
-            raise ValueError("expected 32-byte lowercase hex string")
-        return v
-
-    @field_validator("sig")
-    @classmethod
-    def _validate_sig_hex(cls, v: str) -> str:
-        if len(v) != HEX64_LEN or not _is_hex(v):
-            raise ValueError("expected 64-byte lowercase hex string")
-        return v
-
-    def tag(self, name: str) -> str | None:
-        """First value of the first tag matching `name`, if any."""
-        for t in self.tags:
-            if len(t) >= 2 and t[0] == name:
-                return t[1]
-        return None
-
-
-class UnsignedNostrEvent(BaseModel):
-    """NIP-01 event-shaped payload without a signature.
-
-    Concord seals carry an unsigned rumor inside their encrypted content; it
-    must not be serialized with a dummy ``sig`` field.
-    """
-
-    id: str
-    pubkey: str
-    created_at: int
-    kind: int
-    tags: list[list[str]]
-    content: str
-
-
-def _is_hex(v: str) -> bool:
-    try:
-        bytes.fromhex(v)
-    except ValueError:
-        return False
-    return v == v.lower()
-
-
-def compute_event_id(event: NostrEvent | UnsignedNostrEvent) -> str:
-    """NIP-01 event id: sha256 of the canonical serialization form.
-
-    Canonical form is [0, pubkey, created_at, kind, tags, content] serialized
-    with no extra whitespace and only the JSON-mandated escapes (this is what
-    `json.dumps(..., separators=(",", ":"), ensure_ascii=False)` produces).
-    """
-    serialized = json.dumps(
-        [0, event.pubkey, event.created_at, event.kind, event.tags, event.content],
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def verify_event(event: NostrEvent) -> None:
-    """Verify an event's id matches its content and its signature is valid.
-
-    Raises NostrEventError on any failure. Does not check kind, tags, or
-    timestamp freshness — that's NIP-98-specific and lives in nip98.py.
-    """
-    expected_id = compute_event_id(event)
-    if event.id != expected_id:
-        raise NostrEventError(f"event id mismatch: got {event.id}, computed {expected_id}")
-
-    try:
-        parsed = Event.from_json(json.dumps(event.model_dump()))
-        ok = parsed.verify_signature()
-    except Exception as exc:  # noqa: BLE001 - any crypto-library failure means "invalid"
-        raise NostrEventError(f"signature verification failed: {exc}") from exc
-
-    if not ok:
-        raise NostrEventError("invalid schnorr signature")
-
-
-def sign_event(
-    private_key: Keys,
-    *,
-    pubkey: str,
-    kind: int,
-    tags: list[list[str]],
-    content: str = "",
-    created_at: int | None = None,
-) -> NostrEvent:
-    """Build and sign a NIP-01 event. The counterpart to verify_event() -
-    used client-side (auth/signing.py's ClientIdentity) to sign outgoing
-    NIP-98 and delegation events.
-
-    `pubkey` is the x-only hex public key matching `private_key` - passed
-    in rather than derived here, since every caller already has it from
-    key loading and re-deriving it on every signed event would be wasted
-    work.
-    """
-    created_at = int(time.time()) if created_at is None else created_at
-    if private_key.public_key().to_hex() != pubkey.lower():
-        raise NostrEventError("private key does not match the supplied public key")
-    builder = EventBuilder(Kind(kind), content).tags([Tag.parse(list(t)) for t in tags])
-    event = builder.custom_created_at(Timestamp.from_secs(created_at)).finalize(private_key)
-    return NostrEvent(
-        id=event.id().to_hex(),
-        pubkey=pubkey,
-        created_at=created_at,
-        kind=kind,
-        tags=tags,
-        content=content,
-        sig=event.signature(),
-    )
+__all__ = [
+    "HEX32_LEN",
+    "HEX64_LEN",
+    "NostrEvent",
+    "NostrEventError",
+    "UnsignedNostrEvent",
+    "compute_event_id",
+    "sign_event",
+    "verify_event",
+]

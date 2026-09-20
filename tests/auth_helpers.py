@@ -16,7 +16,7 @@ import time
 
 from nostr_sdk import Keys
 
-from nostrhost_policy.auth.nostr import NostrEvent, sign_event
+from nostrhost_auth.events import NostrEvent, sign_event
 
 __all__ = [
     "new_keypair",

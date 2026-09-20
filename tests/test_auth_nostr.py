@@ -5,7 +5,7 @@ import time
 import pytest
 
 from tests.auth_helpers import new_keypair, sign_event
-from nostrhost_policy.auth.nostr import NostrEventError, verify_event
+from nostrhost_auth.events import NostrEventError, verify_event
 
 
 def test_valid_event_verifies():

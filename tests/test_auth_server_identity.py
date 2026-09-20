@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nostrhost_policy.auth.server_identity import ServerIdentity, ServerIdentityError
+from nostrhost_auth.server_identity import ServerIdentity, ServerIdentityError
 
 
 def test_generates_new_identity_on_first_load(tmp_path: Path):

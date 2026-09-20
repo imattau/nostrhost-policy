@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nostrhost_policy.auth.npub import Bech32Error, hex_to_npub, hex_to_nsec, npub_to_hex
+from nostrhost_auth.keys import Bech32Error, hex_to_npub, hex_to_nsec, npub_to_hex
 
 
 def test_roundtrip():

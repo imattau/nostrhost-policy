@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from nostrhost_policy.auth.npub import Bech32Error, npub_to_hex
+from nostrhost_auth.keys import Bech32Error, npub_to_hex
 
 _HEX_PUBKEY_RE = re.compile(r"[0-9a-f]{64}")
 

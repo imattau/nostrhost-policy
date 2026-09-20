@@ -56,7 +56,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from nostrhost_policy.auth.nostr import NostrEvent, NostrEventError, verify_event
+from nostrhost_auth.events import NostrEvent, NostrEventError, verify_event
 
 
 class ConfirmationError(ValueError):

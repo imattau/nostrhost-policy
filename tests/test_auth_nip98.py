@@ -5,8 +5,8 @@ import time
 import pytest
 
 from tests.auth_helpers import make_nip98_authorization_header, new_keypair
-from nostrhost_policy.auth.nip98 import Nip98Error, verify_nip98_request
-from nostrhost_policy.auth.replay import ReplayCache
+from nostrhost_auth.nip98 import Nip98Error, verify_nip98_request
+from nostrhost_auth.replay import ReplayCache
 
 URL = "https://mcp.example.com/mcp"
 

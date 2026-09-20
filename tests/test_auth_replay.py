@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nostrhost_policy.auth.replay import ReplayCache, ReplayError
+from nostrhost_auth.replay import ReplayCache, ReplayError
 
 
 def test_first_use_recorded():

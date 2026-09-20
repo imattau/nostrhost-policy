@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from nostrhost_policy.auth.identity import IdentityRecord, IdentityStore
-from nostrhost_policy.auth.nostr import NostrEvent, NostrEventError, verify_event
+from nostrhost_auth.events import NostrEvent, NostrEventError, verify_event
 from nostrhost_policy.auth.revocation import RevocationStore
 from nostrhost_policy.policy.scopes import Scope
 

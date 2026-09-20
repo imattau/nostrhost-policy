@@ -1,6 +1,6 @@
 [project]
 name = "nostrhost-policy"
-version = "0.1.2"
+version = "0.2.0"
 description = "nostrhost reusable authorisation library: roles, scopes, NIP-98, delegations, approvals/confirmation, owner co-signature, audit"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -9,6 +9,7 @@ dependencies = [
     "nostr-sdk>=0.45.1",
     "pydantic>=2.13.5",
     "nostrhost-protocol>=0.1.0",
+    "nostrhost-auth>=0.2.0",
 ]
 
 [dependency-groups]
@@ -22,5 +23,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nostrhost_policy"]
+
 [tool.uv.sources]
 nostrhost-protocol = { path = "../nostrhost-protocol/python" }
+nostrhost-auth = { path = "../nostrhost-auth" }
