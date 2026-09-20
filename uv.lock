@@ -49,13 +49,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/55/69ab2693809deba62311323ccac7d8aced80750893b1675dd1bff418562f/nostr_sdk-0.45.1-cp39-abi3-win_arm64.whl", hash = "sha256:cf246932c5a405a3acc0e921e94615fb8ef5b3e88280735b5a525f46fe906dac", size = 3706921, upload-time = "2026-08-19T16:10:36.232Z" },
 ]
 
-
 [[package]]
 name = "nostrhost-policy"
 version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "nostr-sdk" },
+    { name = "nostrhost-protocol" },
     { name = "pydantic" },
 ]
 
@@ -67,11 +67,25 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "nostr-sdk", specifier = ">=0.45.1" },
+    { name = "nostrhost-protocol", directory = "../nostrhost-protocol/python" },
     { name = "pydantic", specifier = ">=2.13.5" },
 ]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
+
+[[package]]
+name = "nostrhost-protocol"
+version = "0.1.0"
+source = { directory = "../nostrhost-protocol/python" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "jsonschema", specifier = ">=4.0" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "packaging"

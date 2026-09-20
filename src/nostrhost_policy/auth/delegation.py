@@ -39,7 +39,9 @@ from nostrhost_policy.auth.nostr import NostrEvent, NostrEventError, verify_even
 from nostrhost_policy.auth.revocation import RevocationStore
 from nostrhost_policy.policy.scopes import Scope
 
-DELEGATION_KIND = 27236
+# One-release alias of the canonical nostrhost-protocol constant.
+from nostrhost_protocol import KindDelegation as DELEGATION_KIND
+
 DEFAULT_MAX_LIFETIME_SECONDS = 30 * 24 * 3600  # 30 days: a delegation is a bearer credential once issued
 # A delegation event dated further in the future than this is rejected. This
 # closes the "set created_at = now + N, expiry = created_at + 30d" bypass of

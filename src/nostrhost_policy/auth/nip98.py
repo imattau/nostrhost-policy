@@ -29,7 +29,9 @@ from pydantic import ValidationError
 from nostrhost_policy.auth.nostr import NostrEvent, NostrEventError, verify_event
 from nostrhost_policy.auth.replay import ReplayCache, ReplayError
 
-NIP98_KIND = 27235
+# One-release alias of the canonical nostrhost-protocol constant.
+from nostrhost_protocol import KindNip98 as NIP98_KIND
+
 DEFAULT_CLOCK_SKEW_SECONDS = 60
 
 

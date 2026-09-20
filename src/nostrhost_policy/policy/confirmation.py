@@ -66,7 +66,8 @@ class ConfirmationError(ValueError):
 # Application-specific owner-approval kind, shared with yunohost-mcp's
 # push_approval.py (BUD-like helper event never published to a relay by us).
 # Chosen clear of NIP-98 (27235) so a signer app never conflates the two.
-OWNER_APPROVAL_KIND = 24243
+# One-release alias of the canonical nostrhost-protocol constant.
+from nostrhost_protocol import KindOwnerApproval as OWNER_APPROVAL_KIND
 
 
 def _parse_owner_approval(signed_approval: str | dict[str, Any] | NostrEvent) -> NostrEvent:
